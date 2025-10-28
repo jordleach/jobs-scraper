@@ -1,0 +1,13 @@
+{
+  "name": "ardagh-jobs-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.76.1",
+    "dotenv": "^16.4.5",
+    "playwright": "^1.47.2"
+  }
+}
