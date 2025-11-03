@@ -28,6 +28,7 @@ jobs:
         env:
           BOLT_INGEST_URL: ${{ secrets.BOLT_INGEST_URL }}
           INGEST_KEY: ${{ secrets.INGEST_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: npm start
 
 
