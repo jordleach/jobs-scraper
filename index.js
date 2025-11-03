@@ -16,10 +16,6 @@ const WAIT_MOUNT_MS = Number(process.env.WAIT_MOUNT_MS || 5000); // short wait: 
 const BOLT_INGEST_URL = process.env.BOLT_INGEST_URL;          // e.g. https://your-bolt-app.vercel.app/api/ingest-jobs
 const INGEST_KEY = process.env.INGEST_KEY;                    // same value you added in Bolt + GitHub secrets
 
-// Optional filter to bias to glass roles (kept flexible)
-const GLASS_ONLY = (process.env.GLASS_ONLY || 'true').toLowerCase() !== 'false';
-const FILTER_REGEX = new RegExp(process.env.SCRAPE_FILTER || 'glass|agp', 'i');
-
 // ===== Helpers =====
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
@@ -106,8 +102,7 @@ async function scrapeAll() {
       }
     }
 
-    // Convert and optionally filter to glass
-    let allJobs = Array.from(allJobsMap.values()).map(j => {
+    const allJobs = Array.from(allJobsMap.values()).map(j => {
       const location = norm(j.location);
       return {
         title: norm(j.title),
@@ -118,12 +113,6 @@ async function scrapeAll() {
         href: j.href
       };
     });
-
-    if (GLASS_ONLY) {
-      const before = allJobs.length;
-      allJobs = allJobs.filter(j => FILTER_REGEX.test(`${j.title} ${j.category} ${j.team}`));
-      console.log(`Filtered to glass: ${before} -> ${allJobs.length}`);
-    }
 
     const payload = {
       scraped_at: new Date().toISOString(),
@@ -153,42 +142,29 @@ async function postToBolt(payload) {
   if (!BOLT_INGEST_URL || !INGEST_KEY) {
     throw new Error('Missing BOLT_INGEST_URL or INGEST_KEY env vars');
   }
-  const tryPost = async (attempt) => {
-    const res = await fetch(BOLT_INGEST_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-ingest-key': INGEST_KEY
-      },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Bolt ingest failed (attempt ${attempt}) — HTTP ${res.status}: ${text}`);
-    }
-    return res.json();
-  };
 
-  let lastErr;
-  for (let i = 1; i <= 3; i++) {
-    try {
-      const json = await tryPost(i);
-      console.log(`Bolt ingest ok:`, json);
-      return;
-    } catch (e) {
-      lastErr = e;
-      console.warn(String(e));
-      await new Promise(r => setTimeout(r, i * 2000));
-    }
+  const res = await fetch(BOLT_INGEST_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-ingest-key': INGEST_KEY
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Bolt ingest failed: HTTP ${res.status} — ${text}`);
   }
-  throw lastErr;
+
+  const json = await res.json().catch(() => ({}));
+  console.log('Bolt ingest response:', json);
 }
 
 async function main() {
   try {
     const payload = await scrapeAll();
-    const outfile = saveJson(payload);
-    // Post to Bolt so it upserts into the DB under RLS-safe header
+    saveJson(payload);
     await postToBolt(payload);
     console.log(`✓ Successfully scraped ${payload.count} jobs at ${payload.scraped_at}`);
     process.exit(0);
