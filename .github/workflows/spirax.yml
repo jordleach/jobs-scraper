@@ -2,19 +2,25 @@ name: Scrape Jobs (Spirax)
 
 on:
   schedule:
-    - cron: '15 6,18 * * *'   # twice daily UTC
+    - cron: '25 6,18 * * *'   # Twice daily UTC
   workflow_dispatch: {}
+
+concurrency:
+  group: scrape-spirax
+  cancel-in-progress: true
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - name: Run scraper for Spirax
+      - uses: microsoft/playwright-github-action@v1
+      - name: Run scraper (Spirax)
         env:
           BASE_URL: https://sseacademy.csod.com/ux/ats/careersite/2/home?c=sseacademy
           TENANT_ID: spirax
@@ -24,4 +30,5 @@ jobs:
           PAGINATION_MODE: next
           NEXT_SELECTOR: 'button[aria-label="Next"],a[aria-label="Next"],button:has-text("Next"),a:has-text("Next")'
           MAX_PAGES: '80'
+          WAIT_MOUNT_MS: '4000'
         run: npm start
