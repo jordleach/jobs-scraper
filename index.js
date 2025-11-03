@@ -3,10 +3,16 @@ import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 
 const BASE_URL = 'https://jobs.ardaghgroup.com/global/en/search-results?s=1';
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 10;            // search-results uses ?from=<offset> in steps of 10
+const MAX_PAGES = 60;            // hard safety cap
+const WAIT_MOUNT_MS = 5000;      // quick “is there anything here?” check
+const COOKIE_WAIT_MS = 1500;
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL;
-const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseKey =
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE || // prefer in CI if available
+  process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('Missing Supabase credentials');
@@ -15,36 +21,46 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-function normaliseText(s) {
-  return (s || '').replace(/\s+/g, ' ').trim();
-}
+const norm = s => (s || '').replace(/\s+/g, ' ').trim();
 
 function extractCountry(location) {
-  const text = normaliseText(location);
-  const parts = text.split(',').map(p => p.trim());
-  return parts.length > 0 ? parts[parts.length - 1] : '';
+  const parts = norm(location).split(',').map(p => p.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+async function acceptCookies(page) {
+  const sels = [
+    'button:has-text("Accept")',
+    'button:has-text("I Accept")',
+    'button:has-text("Agree")',
+    '[aria-label*="accept" i]',
+  ];
+  for (const s of sels) {
+    const btn = page.locator(s).first();
+    if (await btn.count()) { await btn.click({ timeout: COOKIE_WAIT_MS }).catch(()=>{}); break; }
+  }
 }
 
 async function scrapePage(page, url) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForLoadState('networkidle', { timeout: 45000 });
+  await acceptCookies(page);
+  await page.waitForLoadState('networkidle').catch(()=>{});
 
-  const cardSelector = 'a[href*="/job/"]';
-  await page.waitForSelector(cardSelector, { timeout: 45000 });
+  const anchorSel = 'a[href*="/job/"]';
+  const mounted = await page.locator(anchorSel).first().waitFor({ timeout: WAIT_MOUNT_MS }).then(() => true).catch(() => false);
+  if (!mounted) return [];
 
   const jobs = await page.evaluate(() => {
-    const cards = Array.from(document.querySelectorAll('a[href*="/job/"]'));
+    const anchors = Array.from(document.querySelectorAll('a[href*="/job/"]'));
     const map = new Map();
-    for (const a of cards) {
+    for (const a of anchors) {
       const href = a.href;
       const title = a.textContent?.trim();
       const card = a.closest('article, li, div');
-      const locEl = card?.querySelector('[data-ph-at-id="location"], [class*="location" i]');
-      const catEl = card?.querySelector('[data-ph-at-id="category"], [class*="category" i]');
-      const teamEl = card?.querySelector('[data-ph-at-id="team"], [class*="team" i]');
-      const location = locEl?.textContent?.trim() || '';
-      const category = catEl?.textContent?.trim() || '';
-      const team = teamEl?.textContent?.trim() || '';
+      const pick = q => card?.querySelector(q)?.textContent?.trim() || '';
+      const location = pick('[data-ph-at-id="location"], [class*="location" i]');
+      const category = pick('[data-ph-at-id="category"], [class*="category" i]');
+      const team = pick('[data-ph-at-id="team"], [class*="team" i]');
       if (href && title) map.set(href, { title, href, location, category, team });
     }
     return Array.from(map.values());
@@ -56,35 +72,30 @@ async function scrapePage(page, url) {
 async function scrapeJobs() {
   console.log('Starting job scrape...');
   const browser = await chromium.launch();
-  const context = await browser.newContext({
-    viewport: { width: 1400, height: 1000 }
-  });
+  const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
   const page = await context.newPage();
 
   try {
     const allJobsMap = new Map();
-    let pageOffset = 0;
-    let hasMore = true;
+    const seenOffsets = new Set();
 
-    while (hasMore) {
-      const url = pageOffset === 0
-        ? BASE_URL
-        : `https://jobs.ardaghgroup.com/global/en/search-results?from=${pageOffset}&s=1`;
+    for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
+      const offset = pageIndex * PAGE_SIZE;
+      if (seenOffsets.has(offset)) { console.log('Offset repeated — stopping.'); break; }
+      seenOffsets.add(offset);
 
-      console.log(`Scraping page ${pageOffset / PAGE_SIZE + 1}...`);
+      const url = offset === 0 ? BASE_URL : `https://jobs.ardaghgroup.com/global/en/search-results?from=${offset}&s=1`;
+      console.log(`Scraping page ${pageIndex + 1} (offset ${offset})...`);
+
       const jobs = await scrapePage(page, url);
 
-      if (jobs.length === 0) {
-        hasMore = false;
-        break;
-      }
+      // Stop when the page has no jobs (prevents “phantom page 23”)
+      if (jobs.length === 0) { console.log('No jobs on this page — stopping.'); break; }
 
       jobs.forEach(j => allJobsMap.set(j.href, j));
-      pageOffset += PAGE_SIZE;
 
-      if (jobs.length < PAGE_SIZE) {
-        hasMore = false;
-      }
+      // If the page yields fewer than PAGE_SIZE, we’ve hit the end
+      if (jobs.length < PAGE_SIZE) { console.log('Last page reached (short page).'); break; }
     }
 
     const allJobs = Array.from(allJobsMap.values());
@@ -94,18 +105,17 @@ async function scrapeJobs() {
       source: BASE_URL,
       count: allJobs.length,
       jobs: allJobs.map(j => {
-        const location = normaliseText(j.location);
+        const location = norm(j.location);
         return {
-          title: normaliseText(j.title),
-          location: location,
+          title: norm(j.title),
+          location,
           country: extractCountry(location),
-          category: normaliseText(j.category),
-          team: normaliseText(j.team),
+          category: norm(j.category),
+          team: norm(j.team),
           href: j.href
         };
       })
     };
-
     return payload;
   } finally {
     await page.close().catch(()=>{});
@@ -115,28 +125,35 @@ async function scrapeJobs() {
 }
 
 async function updateDatabase(payload) {
-  console.log(`Updating database with ${payload.count} jobs...`);
+  console.log(`Upserting ${payload.count} jobs...`);
+  const seenAt = payload.scraped_at;
 
-  await supabase
+  // Batch upsert
+  const rows = payload.jobs.map(j => ({
+    title: j.title,
+    location: j.location,
+    description: `${j.category || ''} ${j.team || ''}`.trim(),
+    url: j.href,
+    is_active: true,
+    updated_at: seenAt
+  }));
+
+  const CHUNK = 500;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const slice = rows.slice(i, i + CHUNK);
+    const { error } = await supabase
+      .from('jobs')
+      .upsert(slice, { onConflict: 'url', ignoreDuplicates: false });
+    if (error) throw error;
+  }
+
+  // Deactivate jobs not refreshed this run (safer than flipping everything inactive first)
+  const { error: deactErr } = await supabase
     .from('jobs')
     .update({ is_active: false })
-    .eq('is_active', true);
-
-  for (const job of payload.jobs) {
-    await supabase
-      .from('jobs')
-      .upsert({
-        title: job.title,
-        location: job.location,
-        description: `${job.category || ''} ${job.team || ''}`.trim(),
-        url: job.href,
-        is_active: true,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'url',
-        ignoreDuplicates: false
-      });
-  }
+    .eq('is_active', true)
+    .lt('updated_at', seenAt);
+  if (deactErr) throw deactErr;
 
   console.log('Database updated successfully');
 }
