@@ -143,12 +143,16 @@ async function postToBolt(payload) {
     throw new Error('Missing BOLT_INGEST_URL or INGEST_KEY env vars');
   }
 
+  const auth = process.env.SUPABASE_ANON_KEY; // add this env in GitHub secrets
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-ingest-key': INGEST_KEY
+  };
+  if (auth) headers['Authorization'] = `Bearer ${auth}`;
+
   const res = await fetch(BOLT_INGEST_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-ingest-key': INGEST_KEY
-    },
+    headers,
     body: JSON.stringify(payload)
   });
 
@@ -160,6 +164,7 @@ async function postToBolt(payload) {
   const json = await res.json().catch(() => ({}));
   console.log('Bolt ingest response:', json);
 }
+
 
 async function main() {
   try {
