@@ -12,6 +12,11 @@ const PAGE_SIZE = Number(process.env.PAGE_SIZE || 10);        // search-results 
 const MAX_PAGES = Number(process.env.MAX_PAGES || 60);        // safety cap
 const WAIT_MOUNT_MS = Number(process.env.WAIT_MOUNT_MS || 5000); // short wait: "are there jobs on this page?"
 
+// ===== Next button support for pages where URL doesn't change between pages =====
+const PAGINATION_MODE = (process.env.PAGINATION_MODE || 'offset').toLowerCase(); // 'offset' or 'next'
+const NEXT_SELECTOR = process.env.NEXT_SELECTOR || 'a[aria-label="Next"],button[aria-label="Next"],a:has-text("Next"),button:has-text("Next")';
+const TENANT_ID = process.env.TENANT_ID || 'default';
+
 // Bolt ingestion endpoint + shared secret header (required)
 const BOLT_INGEST_URL = process.env.BOLT_INGEST_URL;          // e.g. https://your-bolt-app.vercel.app/api/ingest-jobs
 const INGEST_KEY = process.env.INGEST_KEY;                    // same value you added in Bolt + GitHub secrets
@@ -73,32 +78,66 @@ async function scrapeAll() {
   console.log('Starting job scrape...');
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
+
+  // Block heavy assets to speed things up
+  await context.route('**/*', route => {
+    const u = route.request().url();
+    if (/\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf)$/i.test(u)) return route.abort();
+    if (/googletagmanager|analytics|doubleclick|facebook|hotjar|fullstory|segment/i.test(u)) return route.abort();
+    route.continue();
+  });
+
   const page = await context.newPage();
 
   try {
     const allJobsMap = new Map();
 
-    for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
-      const offset = pageIndex * PAGE_SIZE;
-      const url = offset === 0 ? BASE_URL
-        : `https://jobs.ardaghgroup.com/global/en/search-results?from=${offset}&s=1`;
-      console.log(`Scraping page ${pageIndex + 1} (offset ${offset})...`);
-
-      const jobs = await scrapePage(page, url);
-
-      // Stop when no jobs mount on this page (prevents "phantom page 23" timeouts)
-      if (jobs.length === 0) {
-        console.log('No jobs on this page — stopping.');
-        break;
-      }
-
-      // Deduplicate by href
+    if (PAGINATION_MODE === 'next') {
+      // --- Next-button pagination (for sites like Spirax where URL doesn't change)
+      console.log('Scraping page 1 (Next mode)…');
+      let jobs = await scrapePage(page, BASE_URL);
+      if (jobs.length === 0) console.log('No jobs on first page (Next mode).');
       jobs.forEach(j => allJobsMap.set(j.href, j));
 
-      // If fewer than PAGE_SIZE, we've hit the end
-      if (jobs.length < PAGE_SIZE) {
-        console.log('Last page reached (short page).');
-        break;
+      for (let p = 2; p <= MAX_PAGES; p++) {
+        const next = page.locator(NEXT_SELECTOR).first();
+        const exists = (await next.count()) > 0;
+        const enabled = exists && await next.isEnabled().catch(() => false);
+        if (!exists || !enabled) { console.log('No Next button — last page reached.'); break; }
+
+        await Promise.all([
+          next.click().catch(()=>{}),
+          page.waitForLoadState('networkidle', { timeout: 20000 }).catch(()=>{})
+        ]);
+
+        console.log(`Scraping page ${p} (Next mode)…`);
+        const more = await scrapePage(page, page.url());
+        if (more.length === 0) { console.log('No jobs on this page — stopping.'); break; }
+        const before = allJobsMap.size;
+        more.forEach(j => allJobsMap.set(j.href, j));
+        if (allJobsMap.size === before) { console.log('No new jobs detected — stopping.'); break; }
+      }
+    } else {
+      // --- Offset pagination (current Ardagh behaviour)
+      for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
+        const offset = pageIndex * PAGE_SIZE;
+        const url = offset === 0 ? BASE_URL
+          : `${BASE_URL.includes('?') ? BASE_URL + '&' : BASE_URL + '?'}from=${offset}&s=1`;
+        console.log(`Scraping page ${pageIndex + 1} (offset ${offset})…`);
+
+        const jobs = await scrapePage(page, url);
+
+        if (jobs.length === 0) {
+          console.log('No jobs on this page — stopping.');
+          break;
+        }
+
+        jobs.forEach(j => allJobsMap.set(j.href, j));
+
+        if (jobs.length < PAGE_SIZE) {
+          console.log('Last page reached (short page).');
+          break;
+        }
       }
     }
 
@@ -129,6 +168,7 @@ async function scrapeAll() {
   }
 }
 
+
 function saveJson(payload) {
   const outDir = path.join(process.cwd(), 'public');
   fs.mkdirSync(outDir, { recursive: true });
@@ -143,12 +183,16 @@ async function postToBolt(payload) {
     throw new Error('Missing BOLT_INGEST_URL or INGEST_KEY env vars');
   }
 
-  const auth = process.env.SUPABASE_ANON_KEY; // add this env in GitHub secrets
+  const auth = process.env.SUPABASE_ANON_KEY; // from GitHub secret
   const headers = {
     'Content-Type': 'application/json',
-    'x-ingest-key': INGEST_KEY
+    'x-ingest-key': INGEST_KEY,
+    'x-tenant-id': TENANT_ID
   };
-  if (auth) headers['Authorization'] = `Bearer ${auth}`;
+  if (auth) {
+    headers['Authorization'] = `Bearer ${auth}`; // required for Edge Function JWT
+    headers['apikey'] = auth;                    // optional, some setups expect it
+  }
 
   const res = await fetch(BOLT_INGEST_URL, {
     method: 'POST',
