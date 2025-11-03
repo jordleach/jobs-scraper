@@ -24,11 +24,17 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Run scraper
-        env:
-          BOLT_INGEST_URL: ${{ secrets.BOLT_INGEST_URL }}
-          INGEST_KEY: ${{ secrets.INGEST_KEY }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: npm start
+- name: Run scraper (Ardagh)
+  env:
+    BASE_URL: https://jobs.ardaghgroup.com/global/en/search-results?s=1
+    TENANT_ID: ardagh
+    BOLT_INGEST_URL: ${{ secrets.BOLT_INGEST_URL }}
+    INGEST_KEY: ${{ secrets.INGEST_KEY }}
+    SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    PAGINATION_MODE: offset
+    PAGE_SIZE: '10'
+    MAX_PAGES: '30'
+  run: npm start
+
 
 
