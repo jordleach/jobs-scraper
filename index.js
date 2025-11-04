@@ -50,26 +50,59 @@ async function scrapePage(page, url) {
   await acceptCookies(page);
   await page.waitForLoadState('networkidle').catch(() => {});
 
-  const anchorSel = 'a[href*="/job/"]';
-  const mounted = await page.locator(anchorSel).first().waitFor({ timeout: WAIT_MOUNT_MS })
-    .then(() => true).catch(() => false);
-  if (!mounted) return [];
-
-  const jobs = await page.evaluate(() => {
-    const anchors = Array.from(document.querySelectorAll('a[href*="/job/"]'));
-    const map = new Map();
-    for (const a of anchors) {
-      const href = a.href || a.getAttribute('href');
-      const title = a.textContent?.trim();
-      const card = a.closest('article, li, div');
-      const pick = q => card?.querySelector(q)?.textContent?.trim() || '';
-      const location = pick('[data-ph-at-id="location"], [class*="location" i]');
-      const category = pick('[data-ph-at-id="category"], [class*="category" i]');
-      const team = pick('[data-ph-at-id="team"], [class*="team" i]');
-      if (href && title) map.set(href, { title, href, location, category, team });
-    }
-    return Array.from(map.values());
+// Wait for Cornerstone job tiles to appear
+const anchorSel = 'a[data-tag="displayJobTitle"], a[href*="/requisition/"]';
+const mounted = await page.locator(anchorSel).first().waitFor({ timeout: WAIT_MOUNT_MS })
+  .then(() => true)
+  .catch(async () => {
+    console.log('No jobs found yet — waiting for dynamic load...');
+    await page.waitForTimeout(5000);
+    return await page.locator(anchorSel).first().isVisible();
   });
+
+if (!mounted) {
+  console.log('No job cards mounted after wait — skipping this page.');
+  return [];
+}
+
+const jobs = await page.evaluate(() => {
+  // Find Cornerstone job links (data-tag="displayJobTitle")
+  const cards = Array.from(document.querySelectorAll('a[data-tag="displayJobTitle"], a[href*="/requisition/"]'));
+  const map = new Map();
+
+  for (const a of cards) {
+    const href = a.getAttribute('href') || '';
+    const absHref = href.startsWith('http')
+      ? href
+      : new URL(href, location.origin).toString();
+
+    // Title can be on <a> itself or a nested <p>
+    const titleEl = a.querySelector('p[data-tag]') || a;
+    const title = (titleEl.textContent || '').trim();
+
+    // Closest parent <div> holds the other job info
+    const container = a.closest('div') || a.parentElement;
+    const locationEl = container?.querySelector('p[data-tag="displayJobLocation"]');
+    const dateEl = container?.querySelector('p[data-tag="displayJobPostingDate"]');
+
+    const location = (locationEl?.textContent || '').trim();
+    const posted = (dateEl?.textContent || '').trim();
+
+    if (title && absHref) {
+      map.set(absHref, {
+        title,
+        href: absHref,
+        location,
+        category: '',  // Not present in Spirax layout
+        team: '',      // Not present in Spirax layout
+        posted
+      });
+    }
+  }
+
+  console.log(`Extracted ${map.size} jobs`);
+  return Array.from(map.values());
+});
 
   return jobs;
 }
