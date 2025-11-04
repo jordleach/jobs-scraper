@@ -29,8 +29,7 @@ jobs:
           INGEST_KEY: ${{ secrets.INGEST_KEY }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           PAGINATION_MODE: next
-          NEXT_SELECTOR: 'button[aria-label^="Next"],button[aria-label*="Next Page"],button.next,a.next,button.p-icon-right-cursor'
-
+          NEXT_SELECTOR: 'button[aria-label^="Next Page"], button.p-icon-right-cursor.next'
           MAX_PAGES: '80'
           WAIT_MOUNT_MS: '4000'
         run: npm start
