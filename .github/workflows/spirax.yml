@@ -17,12 +17,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
+      - uses: actions/setup-node@v4
+        with:
           node-version: 20
-      - run: npm ci
+      - run: npm install
       - uses: microsoft/playwright-github-action@v1
       - name: Run scraper (Spirax)
         env:
-          BASE_URL: https://sseacademy.csod.com/ux/ats/careersite/2/home?c=sseacademy
+          BASE_URL: 'https://sseacademy.csod.com/ux/ats/careersite/2/home?c=sseacademy'
           TENANT_ID: spirax
           BOLT_INGEST_URL: ${{ secrets.BOLT_INGEST_URL }}
           INGEST_KEY: ${{ secrets.INGEST_KEY }}
