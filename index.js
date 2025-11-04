@@ -74,7 +74,7 @@ const jobs = await page.evaluate(() => {
     const href = a.getAttribute('href') || '';
     const absHref = href.startsWith('http')
       ? href
-      : new URL(href, location.origin).toString();
+      : new URL(href, window.location.origin).toString();
 
     // Title can be on <a> itself or a nested <p>
     const titleEl = a.querySelector('p[data-tag]') || a;
